@@ -82,10 +82,11 @@ static const box_t boxes[CHECKBOX_ITEM_COUNT + 1] = {
     { BOXOSDALT3, "OSD ALT 3", 44 },
     { BOXNAVCRUISE, "NAV CRUISE", 45 },
     { BOXBRAKING, "MC BRAKING", 46 },
-    { BOXUSER1, "USER1", 47 },
-    { BOXUSER2, "USER2", 48 },
+    { BOXUSER1, "USER1", BOX_PERMANENT_ID_USER1 },
+    { BOXUSER2, "USER2", BOX_PERMANENT_ID_USER2 },
     { BOXLOITERDIRCHN, "LOITER CHANGE", 49 },
     { BOXMSPRCOVERRIDE, "MSP RC OVERRIDE", 50 },
+    { BOXPREARM, "PREARM", 51 },
     { CHECKBOX_ITEM_COUNT, NULL, 0xFF }
 };
 
@@ -163,6 +164,7 @@ void initActiveBoxIds(void)
 
     activeBoxIdCount = 0;
     activeBoxIds[activeBoxIdCount++] = BOXARM;
+    activeBoxIds[activeBoxIdCount++] = BOXPREARM;
 
     if (sensors(SENSOR_ACC) && STATE(ALTITUDE_CONTROL)) {
         activeBoxIds[activeBoxIdCount++] = BOXANGLE;
@@ -189,7 +191,7 @@ void initActiveBoxIds(void)
     activeBoxIds[activeBoxIdCount++] = BOXCAMSTAB;
 
 #ifdef USE_GPS
-    if (STATE(ALTITUDE_CONTROL) && (sensors(SENSOR_BARO) || (STATE(AIRPLANE) && feature(FEATURE_GPS)))) {
+    if (STATE(ALTITUDE_CONTROL) && (sensors(SENSOR_BARO) || (feature(FEATURE_GPS) && (STATE(AIRPLANE) || positionEstimationConfig()->use_gps_no_baro)))) {
         activeBoxIds[activeBoxIdCount++] = BOXNAVALTHOLD;
         activeBoxIds[activeBoxIdCount++] = BOXSURFACE;
     }

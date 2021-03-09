@@ -30,6 +30,8 @@
 #define SPI1_MISO_PIN           PA6
 #define SPI1_MOSI_PIN           PA7
 
+#undef USE_VTX_SMARTAUDIO       // Disabled due to flash size
+
 #define USE_EXTI
 
 #define USE_IMU_MPU6000
@@ -91,7 +93,6 @@
 #define SPI2_MISO_PIN           PB14
 #define SPI2_MOSI_PIN           PB15
 
-//#define USE_RX_SPI
 #define RX_SPI_INSTANCE SPI2
 #define RX_NSS_PIN PB3
 

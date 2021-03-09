@@ -26,8 +26,6 @@
 #include "platform.h"
 
 uint8_t cliMode = 0;
-extern uint8_t __config_start;   // configured via linker script when building binaries.
-extern uint8_t __config_end;
 
 #include "blackbox/blackbox.h"
 
@@ -43,8 +41,9 @@ extern uint8_t __config_end;
 #include "common/memory.h"
 #include "common/time.h"
 #include "common/typeconversion.h"
-#include "common/global_functions.h"
-#include "common/global_variables.h"
+#include "common/fp_pid.h"
+#include "programming/global_variables.h"
+#include "programming/pid.h"
 
 #include "config/config_eeprom.h"
 #include "config/feature.h"
@@ -68,7 +67,6 @@ extern uint8_t __config_end;
 #include "drivers/stack_check.h"
 #include "drivers/system.h"
 #include "drivers/time.h"
-#include "drivers/timer.h"
 #include "drivers/usb_msc.h"
 #include "drivers/vtx_common.h"
 
@@ -104,6 +102,7 @@ extern uint8_t __config_end;
 #include "rx/rx.h"
 #include "rx/spektrum.h"
 #include "rx/eleres.h"
+#include "rx/srxl2.h"
 
 #include "scheduler/scheduler.h"
 
@@ -124,7 +123,7 @@ extern uint8_t __config_end;
 #include "telemetry/telemetry.h"
 #include "build/debug.h"
 
-#if FLASH_SIZE > 128
+#if MCU_FLASH_SIZE > 128
 #define PLAY_SOUND
 #endif
 
@@ -811,27 +810,19 @@ static void cliSerial(char *cmdline)
 
         switch (i) {
         case 0:
-            if (baudRateIndex < BAUD_1200 || baudRateIndex > BAUD_2470000) {
-                continue;
-            }
+            baudRateIndex = constrain(baudRateIndex, BAUD_MIN, BAUD_MAX);
             portConfig.msp_baudrateIndex = baudRateIndex;
             break;
         case 1:
-            if (baudRateIndex < BAUD_9600 || baudRateIndex > BAUD_115200) {
-                continue;
-            }
+            baudRateIndex = constrain(baudRateIndex, BAUD_MIN, BAUD_MAX);
             portConfig.gps_baudrateIndex = baudRateIndex;
             break;
         case 2:
-            if (baudRateIndex != BAUD_AUTO && baudRateIndex > BAUD_115200) {
-                continue;
-            }
+            baudRateIndex = constrain(baudRateIndex, BAUD_MIN, BAUD_MAX);
             portConfig.telemetry_baudrateIndex = baudRateIndex;
             break;
         case 3:
-            if (baudRateIndex < BAUD_19200 || baudRateIndex > BAUD_250000) {
-                continue;
-            }
+            baudRateIndex = constrain(baudRateIndex, BAUD_MIN, BAUD_MAX);
             portConfig.peripheral_baudrateIndex = baudRateIndex;
             break;
         }
@@ -1218,10 +1209,10 @@ static void cliTempSensor(char *cmdline)
     } else {
         int16_t i;
         const char *ptr = cmdline, *label;
-        int16_t type, alarm_min, alarm_max;
+        int16_t type=0, alarm_min=0, alarm_max=0;
         bool addressValid = false;
         uint64_t address;
-        int8_t osdSymbol;
+        int8_t osdSymbol=0;
         uint8_t validArgumentCount = 0;
         i = fastA2I(ptr);
         if (i >= 0 && i < MAX_TEMP_SENSORS) {
@@ -1285,6 +1276,67 @@ static void cliTempSensor(char *cmdline)
 }
 #endif
 
+#if defined(USE_SAFE_HOME)
+static void printSafeHomes(uint8_t dumpMask, const navSafeHome_t *navSafeHome, const navSafeHome_t *defaultSafeHome)
+{
+    const char *format = "safehome %u %u %d %d"; // uint8_t enabled, int32_t lat; int32_t lon
+    for (uint8_t i = 0; i < MAX_SAFE_HOMES; i++) {
+        bool equalsDefault = false;
+        if (defaultSafeHome) {
+            equalsDefault = navSafeHome[i].enabled == defaultSafeHome[i].enabled
+               && navSafeHome[i].lat == defaultSafeHome[i].lat
+               && navSafeHome[i].lon == defaultSafeHome[i].lon;
+            cliDefaultPrintLinef(dumpMask, equalsDefault, format, i,
+                defaultSafeHome[i].enabled, defaultSafeHome[i].lat, defaultSafeHome[i].lon);
+        }
+        cliDumpPrintLinef(dumpMask, equalsDefault, format, i,
+            navSafeHome[i].enabled, navSafeHome[i].lat, navSafeHome[i].lon);
+    }
+}
+
+static void cliSafeHomes(char *cmdline)
+{
+    if (isEmpty(cmdline)) {
+        printSafeHomes(DUMP_MASTER, safeHomeConfig(0), NULL);
+    } else if (sl_strcasecmp(cmdline, "reset") == 0) {
+        resetSafeHomes();
+    } else {
+        int32_t lat=0, lon=0;
+        bool enabled=false;
+        uint8_t validArgumentCount = 0;
+        const char *ptr = cmdline;
+        int8_t i = fastA2I(ptr);
+        if (i < 0 || i >= MAX_SAFE_HOMES) {
+             cliShowArgumentRangeError("safehome index", 0, MAX_SAFE_HOMES - 1);
+        } else {
+            if ((ptr = nextArg(ptr))) {
+                enabled = fastA2I(ptr);
+                validArgumentCount++;
+            }
+            if ((ptr = nextArg(ptr))) {
+                lat = fastA2I(ptr);
+                validArgumentCount++;
+            }
+            if ((ptr = nextArg(ptr))) {
+                lon = fastA2I(ptr);
+                validArgumentCount++;
+            }
+            if ((ptr = nextArg(ptr))) {
+                // check for too many arguments
+                validArgumentCount++;
+            }
+            if (validArgumentCount != 3) {
+                cliShowParseError();
+            } else {
+                safeHomeConfigMutable(i)->enabled = enabled;
+                safeHomeConfigMutable(i)->lat = lat;
+                safeHomeConfigMutable(i)->lon = lon;
+            }
+        }
+    }
+}
+
+#endif
 #if defined(USE_NAV) && defined(NAV_NON_VOLATILE_WAYPOINT_STORAGE) && defined(NAV_NON_VOLATILE_WAYPOINT_CLI)
 static void printWaypoints(uint8_t dumpMask, const navWaypoint_t *navWaypoint, const navWaypoint_t *defaultNavWaypoint)
 {
@@ -1338,7 +1390,7 @@ static void cliWaypoints(char *cmdline)
     } else if (sl_strcasecmp(cmdline, "save") == 0) {
         posControl.waypointListValid = false;
         for (int i = 0; i < NAV_MAX_WAYPOINTS; i++) {
-            if (!(posControl.waypointList[i].action == NAV_WP_ACTION_WAYPOINT || posControl.waypointList[i].action == NAV_WP_ACTION_JUMP || posControl.waypointList[i].action == NAV_WP_ACTION_RTH || posControl.waypointList[i].action == NAV_WP_ACTION_HOLD_TIME || posControl.waypointList[i].action == NAV_WP_ACTION_LAND)) break;
+            if (!(posControl.waypointList[i].action == NAV_WP_ACTION_WAYPOINT || posControl.waypointList[i].action == NAV_WP_ACTION_JUMP || posControl.waypointList[i].action == NAV_WP_ACTION_RTH || posControl.waypointList[i].action == NAV_WP_ACTION_HOLD_TIME || posControl.waypointList[i].action == NAV_WP_ACTION_LAND || posControl.waypointList[i].action == NAV_WP_ACTION_SET_POI || posControl.waypointList[i].action == NAV_WP_ACTION_SET_HEAD)) break;
             if (posControl.waypointList[i].flag == NAV_WP_FLAG_LAST) {
                 posControl.waypointCount = i + 1;
                 posControl.waypointListValid = true;
@@ -1351,9 +1403,9 @@ static void cliWaypoints(char *cmdline)
             cliShowParseError();
         }
     } else {
-        int16_t i, p1,p2=0,p3=0,tmp;
-        uint8_t action, flag;
-        int32_t lat, lon, alt;
+        int16_t i, p1=0,p2=0,p3=0,tmp=0;
+        uint8_t action=0, flag=0;
+        int32_t lat=0, lon=0, alt=0;
         uint8_t validArgumentCount = 0;
         const char *ptr = cmdline;
         i = fastA2I(ptr);
@@ -1407,7 +1459,7 @@ static void cliWaypoints(char *cmdline)
 
             if (!(validArgumentCount == 6 || validArgumentCount == 8)) {
                 cliShowParseError();
-            } else if (!(action == 0 || action == NAV_WP_ACTION_WAYPOINT || action == NAV_WP_ACTION_RTH || action == NAV_WP_ACTION_JUMP || action == NAV_WP_ACTION_HOLD_TIME || action == NAV_WP_ACTION_LAND) || (p1 < 0) || !(flag == 0 || flag == NAV_WP_FLAG_LAST)) {
+            } else if (!(action == 0 || action == NAV_WP_ACTION_WAYPOINT || action == NAV_WP_ACTION_RTH || action == NAV_WP_ACTION_JUMP || action == NAV_WP_ACTION_HOLD_TIME || action == NAV_WP_ACTION_LAND || action == NAV_WP_ACTION_SET_POI || action == NAV_WP_ACTION_SET_HEAD) || !(flag == 0 || flag == NAV_WP_FLAG_LAST)) {
                 cliShowParseError();
             } else {
                 posControl.waypointList[i].action = action;
@@ -1682,7 +1734,7 @@ static void printServoMix(uint8_t dumpMask, const servoMixer_t *customServoMixer
                 && customServoMixer.inputSource == customServoMixerDefault.inputSource
                 && customServoMixer.rate == customServoMixerDefault.rate
                 && customServoMixer.speed == customServoMixerDefault.speed
-            #ifdef USE_LOGIC_CONDITIONS
+            #ifdef USE_PROGRAMMING_FRAMEWORK
                 && customServoMixer.conditionId == customServoMixerDefault.conditionId
             #endif
             ;
@@ -1693,7 +1745,7 @@ static void printServoMix(uint8_t dumpMask, const servoMixer_t *customServoMixer
                 customServoMixerDefault.inputSource,
                 customServoMixerDefault.rate,
                 customServoMixerDefault.speed,
-            #ifdef USE_LOGIC_CONDITIONS
+            #ifdef USE_PROGRAMMING_FRAMEWORK
                 customServoMixer.conditionId
             #else
                 0
@@ -1706,7 +1758,7 @@ static void printServoMix(uint8_t dumpMask, const servoMixer_t *customServoMixer
             customServoMixer.inputSource,
             customServoMixer.rate,
             customServoMixer.speed,
-        #ifdef USE_LOGIC_CONDITIONS
+        #ifdef USE_PROGRAMMING_FRAMEWORK
             customServoMixer.conditionId
         #else
             0
@@ -1753,7 +1805,7 @@ static void cliServoMix(char *cmdline)
             customServoMixersMutable(i)->inputSource = args[INPUT];
             customServoMixersMutable(i)->rate = args[RATE];
             customServoMixersMutable(i)->speed = args[SPEED];
-        #ifdef USE_LOGIC_CONDITIONS
+        #ifdef USE_PROGRAMMING_FRAMEWORK
             customServoMixersMutable(i)->conditionId = args[CONDITION];
         #endif
             cliServoMix("");
@@ -1763,7 +1815,7 @@ static void cliServoMix(char *cmdline)
     }
 }
 
-#ifdef USE_LOGIC_CONDITIONS
+#ifdef USE_PROGRAMMING_FRAMEWORK
 
 static void printLogic(uint8_t dumpMask, const logicCondition_t *logicConditions, const logicCondition_t *defaultLogicConditions)
 {
@@ -1933,9 +1985,9 @@ static void cliGvar(char *cmdline) {
         int32_t i = args[INDEX];
         if (
             i >= 0 && i < MAX_GLOBAL_VARIABLES &&
-            args[DEFAULT] >= INT32_MIN && args[DEFAULT] <= INT32_MAX &&  
-            args[MIN] >= INT32_MIN && args[MIN] <= INT32_MAX &&  
-            args[MAX] >= INT32_MIN && args[MAX] <= INT32_MAX  
+            args[DEFAULT] >= INT32_MIN && args[DEFAULT] <= INT32_MAX &&
+            args[MIN] >= INT32_MIN && args[MIN] <= INT32_MAX &&
+            args[MAX] >= INT32_MIN && args[MAX] <= INT32_MAX
         ) {
             globalVariableConfigsMutable(i)->defaultValue = args[DEFAULT];
             globalVariableConfigsMutable(i)->min = args[MIN];
@@ -1948,67 +2000,75 @@ static void cliGvar(char *cmdline) {
     }
 }
 
-#endif
-
-#ifdef USE_GLOBAL_FUNCTIONS
-
-static void printGlobalFunctions(uint8_t dumpMask, const globalFunction_t *globalFunctions, const globalFunction_t *defaultGlobalFunctions)
+static void printPid(uint8_t dumpMask, const programmingPid_t *programmingPids, const programmingPid_t *defaultProgrammingPids)
 {
-    const char *format = "gf %d %d %d %d %d %d %d";
-    for (uint32_t i = 0; i < MAX_GLOBAL_FUNCTIONS; i++) {
-        const globalFunction_t gf = globalFunctions[i];
+    const char *format = "pid %d %d %d %d %d %d %d %d %d %d";
+    for (uint32_t i = 0; i < MAX_PROGRAMMING_PID_COUNT; i++) {
+        const programmingPid_t pid = programmingPids[i];
 
         bool equalsDefault = false;
-        if (defaultGlobalFunctions) {
-            globalFunction_t defaultValue = defaultGlobalFunctions[i];
+        if (defaultProgrammingPids) {
+            programmingPid_t defaultValue = defaultProgrammingPids[i];
             equalsDefault =
-                gf.enabled == defaultValue.enabled &&
-                gf.conditionId == defaultValue.conditionId &&
-                gf.action == defaultValue.action &&
-                gf.withValue.type == defaultValue.withValue.type &&
-                gf.withValue.value == defaultValue.withValue.value &&
-                gf.flags == defaultValue.flags;
+                pid.enabled == defaultValue.enabled &&
+                pid.setpoint.type == defaultValue.setpoint.type &&
+                pid.setpoint.value == defaultValue.setpoint.value &&
+                pid.measurement.type == defaultValue.measurement.type &&
+                pid.measurement.value == defaultValue.measurement.value &&
+                pid.gains.P == defaultValue.gains.P &&
+                pid.gains.I == defaultValue.gains.I &&
+                pid.gains.D == defaultValue.gains.D &&
+                pid.gains.FF == defaultValue.gains.FF;
 
             cliDefaultPrintLinef(dumpMask, equalsDefault, format,
                 i,
-                gf.enabled,
-                gf.conditionId,
-                gf.action,
-                gf.withValue.type,
-                gf.withValue.value,
-                gf.flags
+                pid.enabled,
+                pid.setpoint.type,
+                pid.setpoint.value,
+                pid.measurement.type,
+                pid.measurement.value,
+                pid.gains.P,
+                pid.gains.I,
+                pid.gains.D,
+                pid.gains.FF
             );
         }
         cliDumpPrintLinef(dumpMask, equalsDefault, format,
             i,
-            gf.enabled,
-            gf.conditionId,
-            gf.action,
-            gf.withValue.type,
-            gf.withValue.value,
-            gf.flags
+            pid.enabled,
+            pid.setpoint.type,
+            pid.setpoint.value,
+            pid.measurement.type,
+            pid.measurement.value,
+            pid.gains.P,
+            pid.gains.I,
+            pid.gains.D,
+            pid.gains.FF
         );
     }
 }
 
-static void cliGlobalFunctions(char *cmdline) {
+static void cliPid(char *cmdline) {
     char * saveptr;
-    int args[7], check = 0;
+    int args[10], check = 0;
     uint8_t len = strlen(cmdline);
 
     if (len == 0) {
-        printGlobalFunctions(DUMP_MASTER, globalFunctions(0), NULL);
+        printPid(DUMP_MASTER, programmingPids(0), NULL);
     } else if (sl_strncasecmp(cmdline, "reset", 5) == 0) {
-        pgResetCopy(globalFunctionsMutable(0), PG_GLOBAL_FUNCTIONS);
+        pgResetCopy(programmingPidsMutable(0), PG_LOGIC_CONDITIONS);
     } else {
         enum {
             INDEX = 0,
             ENABLED,
-            CONDITION_ID,
-            ACTION,
-            VALUE_TYPE,
-            VALUE_VALUE,
-            FLAGS,
+            SETPOINT_TYPE,
+            SETPOINT_VALUE,
+            MEASUREMENT_TYPE,
+            MEASUREMENT_VALUE,
+            P_GAIN,
+            I_GAIN,
+            D_GAIN,
+            FF_GAIN,
             ARGS_COUNT
             };
         char *ptr = strtok_r(cmdline, " ", &saveptr);
@@ -2024,28 +2084,34 @@ static void cliGlobalFunctions(char *cmdline) {
 
         int32_t i = args[INDEX];
         if (
-            i >= 0 && i < MAX_GLOBAL_FUNCTIONS &&
+            i >= 0 && i < MAX_PROGRAMMING_PID_COUNT &&
             args[ENABLED] >= 0 && args[ENABLED] <= 1 &&
-            args[CONDITION_ID] >= -1 && args[CONDITION_ID] < MAX_LOGIC_CONDITIONS &&
-            args[ACTION] >= 0 && args[ACTION] < GLOBAL_FUNCTION_ACTION_LAST &&
-            args[VALUE_TYPE] >= 0 && args[VALUE_TYPE] < LOGIC_CONDITION_OPERAND_TYPE_LAST &&
-            args[VALUE_VALUE] >= -1000000 && args[VALUE_VALUE] <= 1000000 &&
-            args[FLAGS] >= 0 && args[FLAGS] <= 255
-
+            args[SETPOINT_TYPE] >= 0 && args[SETPOINT_TYPE] < LOGIC_CONDITION_OPERAND_TYPE_LAST &&
+            args[SETPOINT_VALUE] >= -1000000 && args[SETPOINT_VALUE] <= 1000000 &&
+            args[MEASUREMENT_TYPE] >= 0 && args[MEASUREMENT_TYPE] < LOGIC_CONDITION_OPERAND_TYPE_LAST &&
+            args[MEASUREMENT_VALUE] >= -1000000 && args[MEASUREMENT_VALUE] <= 1000000 &&
+            args[P_GAIN] >= 0 && args[P_GAIN] <= INT16_MAX &&
+            args[I_GAIN] >= 0 && args[I_GAIN] <= INT16_MAX &&
+            args[D_GAIN] >= 0 && args[D_GAIN] <= INT16_MAX &&
+            args[FF_GAIN] >= 0 && args[FF_GAIN] <= INT16_MAX
         ) {
-            globalFunctionsMutable(i)->enabled = args[ENABLED];
-            globalFunctionsMutable(i)->conditionId = args[CONDITION_ID];
-            globalFunctionsMutable(i)->action = args[ACTION];
-            globalFunctionsMutable(i)->withValue.type = args[VALUE_TYPE];
-            globalFunctionsMutable(i)->withValue.value = args[VALUE_VALUE];
-            globalFunctionsMutable(i)->flags = args[FLAGS];
+            programmingPidsMutable(i)->enabled = args[ENABLED];
+            programmingPidsMutable(i)->setpoint.type = args[SETPOINT_TYPE];
+            programmingPidsMutable(i)->setpoint.value = args[SETPOINT_VALUE];
+            programmingPidsMutable(i)->measurement.type = args[MEASUREMENT_TYPE];
+            programmingPidsMutable(i)->measurement.value = args[MEASUREMENT_VALUE];
+            programmingPidsMutable(i)->gains.P = args[P_GAIN];
+            programmingPidsMutable(i)->gains.I = args[I_GAIN];
+            programmingPidsMutable(i)->gains.D = args[D_GAIN];
+            programmingPidsMutable(i)->gains.FF = args[FF_GAIN];
 
-            cliGlobalFunctions("");
+            cliPid("");
         } else {
             cliShowParseError();
         }
     }
 }
+
 #endif
 
 #ifdef USE_SDCARD
@@ -2221,7 +2287,7 @@ static void cliFlashRead(char *cmdline)
 #endif
 
 #ifdef USE_OSD
-static void printOsdLayout(uint8_t dumpMask, const osdConfig_t *osdConfig, const osdConfig_t *osdConfigDefault, int layout, int item)
+static void printOsdLayout(uint8_t dumpMask, const osdLayoutsConfig_t *config, const osdLayoutsConfig_t *configDefault, int layout, int item)
 {
     // "<layout> <item> <col> <row> <visible>"
     const char *format = "osd_layout %d %d %d %d %c";
@@ -2229,8 +2295,8 @@ static void printOsdLayout(uint8_t dumpMask, const osdConfig_t *osdConfig, const
         if (layout >= 0 && layout != ii) {
             continue;
         }
-        const uint16_t *layoutItems = osdConfig->item_pos[ii];
-        const uint16_t *defaultLayoutItems = osdConfigDefault->item_pos[ii];
+        const uint16_t *layoutItems = config->item_pos[ii];
+        const uint16_t *defaultLayoutItems = configDefault->item_pos[ii];
         for (int jj = 0; jj < OSD_ITEM_COUNT; jj++) {
             if (item >= 0 && item != jj) {
                 continue;
@@ -2322,15 +2388,15 @@ static void cliOsdLayout(char *cmdline)
             // No args, or just layout or layout and item. If any of them not provided,
             // it will be the -1 that we used during initialization, so printOsdLayout()
             // won't use them for filtering.
-            printOsdLayout(DUMP_MASTER, osdConfig(), osdConfig(), layout, item);
+            printOsdLayout(DUMP_MASTER, osdLayoutsConfig(), osdLayoutsConfig(), layout, item);
             break;
         case 4:
             // No visibility provided. Keep the previous one.
-            visible = OSD_VISIBLE(osdConfig()->item_pos[layout][item]);
+            visible = OSD_VISIBLE(osdLayoutsConfig()->item_pos[layout][item]);
             FALLTHROUGH;
         case 5:
             // Layout, item, pos and visibility. Set the item.
-            osdConfigMutable()->item_pos[layout][item] = OSD_POS(col, row) | (visible ? OSD_VISIBLE_FLAG : 0);
+            osdLayoutsConfigMutable()->item_pos[layout][item] = OSD_POS(col, row) | (visible ? OSD_VISIBLE_FLAG : 0);
             break;
         default:
             // Unhandled
@@ -2623,6 +2689,35 @@ static void cliEleresBind(char *cmdline)
     }
 }
 #endif // USE_RX_ELERES
+
+#if defined(USE_RX_SPI) || defined (USE_SERIALRX_SRXL2)
+void cliRxBind(char *cmdline){
+    UNUSED(cmdline);
+    if (rxConfig()->receiverType == RX_TYPE_SERIAL) {
+        switch (rxConfig()->serialrx_provider) {
+        default:
+            cliPrint("Not supported.");
+            break;
+#if defined(USE_SERIALRX_SRXL2)
+        case SERIALRX_SRXL2:
+            srxl2Bind();
+            cliPrint("Binding SRXL2 receiver...");
+            break;
+#endif
+        }
+    }
+#if defined(USE_RX_SPI)
+    else if (rxConfig()->receiverType == RX_TYPE_SPI) {
+        switch (rxConfig()->rx_spi_protocol) {
+        default:
+            cliPrint("Not supported.");
+            break;
+        }
+
+    }
+#endif
+}
+#endif
 
 static void cliExit(char *cmdline)
 {
@@ -3321,17 +3416,19 @@ static void printConfig(const char *cmdline, bool doDiff)
         cliPrintHashLine("servo");
         printServo(dumpMask, servoParams_CopyArray, servoParams(0));
 
-#ifdef USE_LOGIC_CONDITIONS
+#if defined(USE_SAFE_HOME)
+        cliPrintHashLine("safehome");
+        printSafeHomes(dumpMask, safeHomeConfig_CopyArray, safeHomeConfig(0));
+#endif
+#ifdef USE_PROGRAMMING_FRAMEWORK
         cliPrintHashLine("logic");
         printLogic(dumpMask, logicConditions_CopyArray, logicConditions(0));
 
         cliPrintHashLine("gvar");
         printGvar(dumpMask, globalVariableConfigs_CopyArray, globalVariableConfigs(0));
-#endif
 
-#ifdef USE_GLOBAL_FUNCTIONS
-        cliPrintHashLine("gf");
-        printGlobalFunctions(dumpMask, globalFunctions_CopyArray, globalFunctions(0));
+        cliPrintHashLine("pid");
+        printPid(dumpMask, programmingPids_CopyArray, programmingPids(0));
 #endif
 
         cliPrintHashLine("feature");
@@ -3380,7 +3477,7 @@ static void printConfig(const char *cmdline, bool doDiff)
 
 #ifdef USE_OSD
         cliPrintHashLine("osd_layout");
-        printOsdLayout(dumpMask, &osdConfig_Copy, osdConfig(), -1, -1);
+        printOsdLayout(dumpMask, &osdLayoutsConfig_Copy, osdLayoutsConfig(), -1, -1);
 #endif
 
         cliPrintHashLine("master");
@@ -3462,11 +3559,7 @@ static void cliMsc(char *cmdline)
         delay(1000);
         waitForSerialPortToFinishTransmitting(cliPort);
         stopPwmAllMotors();
-
-        persistentObjectWrite(PERSISTENT_OBJECT_RESET_REASON, RESET_MSC_REQUEST);
-
-        __disable_irq();
-        NVIC_SystemReset();
+        systemResetRequest(RESET_MSC_REQUEST);
     } else {
         cliPrint("\r\nStorage not present or failed to initialize!");
         bufWriterFlush(cliWriter);
@@ -3515,6 +3608,9 @@ const clicmd_t cmdTable[] = {
 #ifdef BEEPER
     CLI_COMMAND_DEF("beeper", "turn on/off beeper", "list\r\n"
             "\t<+|->[name]", cliBeeper),
+#endif
+#if defined(USE_RX_SPI) || defined (USE_SERIALRX_SRXL2)
+    CLI_COMMAND_DEF("bind_rx", "initiate binding for RX SPI or SRXL2", NULL, cliRxBind),
 #endif
 #if defined(USE_BOOTLOG)
     CLI_COMMAND_DEF("bootlog", "show boot events", NULL, cliBootlog),
@@ -3570,13 +3666,16 @@ const clicmd_t cmdTable[] = {
     CLI_COMMAND_DEF("resource", "view currently used resources", NULL, cliResource),
 #endif
     CLI_COMMAND_DEF("rxrange", "configure rx channel ranges", NULL, cliRxRange),
+#if defined(USE_SAFE_HOME)
+    CLI_COMMAND_DEF("safehome", "safe home list", NULL, cliSafeHomes),
+#endif
     CLI_COMMAND_DEF("save", "save and reboot", NULL, cliSave),
     CLI_COMMAND_DEF("serial", "configure serial ports", NULL, cliSerial),
 #ifdef USE_SERIAL_PASSTHROUGH
     CLI_COMMAND_DEF("serialpassthrough", "passthrough serial data to port", "<id> [baud] [mode] : passthrough to serial", cliSerialPassthrough),
 #endif
     CLI_COMMAND_DEF("servo", "configure servos", NULL, cliServo),
-#ifdef USE_LOGIC_CONDITIONS
+#ifdef USE_PROGRAMMING_FRAMEWORK
     CLI_COMMAND_DEF("logic", "configure logic conditions",
         "<rule> <enabled> <activatorId> <operation> <operand A type> <operand A value> <operand B type> <operand B value> <flags>\r\n"
         "\treset\r\n", cliLogic),
@@ -3584,11 +3683,10 @@ const clicmd_t cmdTable[] = {
     CLI_COMMAND_DEF("gvar", "configure global variables",
         "<gvar> <default> <min> <max>\r\n"
         "\treset\r\n", cliGvar),
-#endif
-#ifdef USE_GLOBAL_FUNCTIONS
-    CLI_COMMAND_DEF("gf", "configure global functions",
-        "<rule> <enabled> <logic condition> <action> <operand type> <operand value> <flags>\r\n"
-        "\treset\r\n", cliGlobalFunctions),
+
+    CLI_COMMAND_DEF("pid", "configurable PID controllers",
+        "<#> <enabled> <setpoint type> <setpoint value> <measurement type> <measurement value> <P gain> <I gain> <D gain> <FF gain>\r\n"
+        "\treset\r\n", cliPid),
 #endif
     CLI_COMMAND_DEF("set", "change setting", "[<name>=<value>]", cliSet),
     CLI_COMMAND_DEF("smix", "servo mixer",

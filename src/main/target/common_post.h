@@ -19,6 +19,10 @@
 
 #pragma once
 
+// Config storage in memory-mapped flash
+extern uint8_t __config_start;
+extern uint8_t __config_end;
+
 // Backward compatibility for I2C OLED display
 #if !defined(USE_I2C)
 # undef USE_DASHBOARD
@@ -27,28 +31,29 @@
 
 // Enable MSP_DISPLAYPORT for F3 targets without builtin OSD,
 // since it's used to display CMS on MWOSD
-#if !defined(USE_MSP_DISPLAYPORT) && (FLASH_SIZE > 128) && !defined(USE_OSD)
+#if !defined(USE_MSP_DISPLAYPORT) && (MCU_FLASH_SIZE > 128) && !defined(USE_OSD)
 #define USE_MSP_DISPLAYPORT
 #endif
 
-#if defined(USE_OSD) && (FLASH_SIZE > 256)
+#if defined(USE_OSD) && (MCU_FLASH_SIZE > 256)
 #define USE_CANVAS
 #endif
 
-#ifdef USE_ESC_SENSOR
-    #define USE_RPM_FILTER
+// Enable MSP BARO & MAG drivers if BARO and MAG sensors are compiled in
+#if defined(USE_MAG)
+#define USE_MAG_MSP
 #endif
 
 #ifdef USE_MULTI_GYRO
     #define USE_DUAL_GYRO
 #endif
 
-#ifdef USE_ITCM_RAM
-#define FAST_CODE                   __attribute__((section(".tcm_code")))
-#define NOINLINE                    __NOINLINE
-#else
-#define FAST_CODE
-#define NOINLINE
+#if defined(USE_BARO)
+#define USE_BARO_MSP
+#endif
+
+#ifdef USE_ESC_SENSOR
+    #define USE_RPM_FILTER
 #endif
 
 #ifdef STM32F3

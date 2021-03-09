@@ -36,6 +36,10 @@
 #include "io/osd_common.h"
 #include "io/osd_grid.h"
 
+#include "navigation/navigation.h"
+
+#if defined(USE_OSD)
+
 #define CANVAS_DEFAULT_GRID_ELEMENT_WIDTH OSD_CHAR_WIDTH
 #define CANVAS_DEFAULT_GRID_ELEMENT_HEIGHT OSD_CHAR_HEIGHT
 
@@ -88,17 +92,14 @@ void osdDrawVario(displayPort_t *display, displayCanvas_t *canvas, const osdDraw
 #endif
 }
 
-void osdDrawDirArrow(displayPort_t *display, displayCanvas_t *canvas, const osdDrawPoint_t *p, float degrees, bool eraseBefore)
+void osdDrawDirArrow(displayPort_t *display, displayCanvas_t *canvas, const osdDrawPoint_t *p, float degrees)
 {
-#if !defined(USE_CANVAS)
-    UNUSED(eraseBefore);
-#endif
     uint8_t gx;
     uint8_t gy;
 
 #if defined(USE_CANVAS)
     if (canvas) {
-        osdCanvasDrawDirArrow(display, canvas, p, degrees, eraseBefore);
+        osdCanvasDrawDirArrow(display, canvas, p, degrees);
     } else {
 #endif
         osdDrawPointGetGrid(&gx, &gy, display, canvas, p);
@@ -139,3 +140,26 @@ void osdDrawHeadingGraph(displayPort_t *display, displayCanvas_t *canvas, const 
     }
 #endif
 }
+
+void osdDrawSidebars(displayPort_t *display, displayCanvas_t *canvas)
+{
+#if defined(USE_CANVAS)
+    if (osdCanvasDrawSidebars(display, canvas))  {
+        return;
+    }
+#else
+    UNUSED(canvas);
+#endif
+    osdGridDrawSidebars(display);
+}
+
+#endif
+
+#ifdef USE_GPS
+int16_t osdGet3DSpeed(void)
+{
+    int16_t vert_speed = getEstimatedActualVelocity(Z);
+    int16_t hor_speed = gpsSol.groundSpeed;
+    return (int16_t)sqrtf(sq(hor_speed) + sq(vert_speed));
+}
+#endif
